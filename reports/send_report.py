@@ -16,6 +16,7 @@ collectors/collect_overnight.py 의 collect_overnight_signals() 결과를
 
 import os
 import sys
+import time
 
 import matplotlib
 matplotlib.use("Agg")  # GitHub Actions 등 비-GUI 환경에서 렌더링 (market-monitor weekly_report.py와 동일한 처리)
@@ -73,11 +74,6 @@ def format_message(result):
 
         lines.append(line)
 
-        # 최근 N일 추이 (담백하게 종가만 나열)
-        if v["trend"]:
-            trend_str = " / ".join(f"{t['close']}" for t in v["trend"])
-            lines.append(f"  최근 추이: {trend_str}")
-
     lines.append("")
     lines.append(f"(주의 기준: 전일 대비 변동폭 |{ALERT_THRESHOLD_PCT}%| 이상)")
 
@@ -85,6 +81,7 @@ def format_message(result):
 
 
 CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight_chart.png")
+TREND_CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight_trend_chart.png")
 
 
 def build_chart(result):
@@ -152,6 +149,60 @@ def build_chart(result):
     return CHART_PATH
 
 
+def build_trend_chart(result):
+    """
+    6개 지표의 최근 N일(TREND_DAYS) 추이를 라인 차트로 그려 PNG로 저장한다.
+
+    절대가 단위가 서로 달라(SOX ~13000대, MU ~1000대 등) 그대로 그리면
+    스케일이 안 맞으므로, 각 지표를 추이 구간 첫날 기준 변동률(%)로 정규화해서
+    같은 축에 겹쳐 그린다 (0%에서 모두 출발).
+
+    Returns:
+        차트를 그릴 수 있었으면 TREND_CHART_PATH, 그릴 데이터가 전혀 없으면 None
+    """
+    series_to_plot = {}
+
+    for name, v in result["signals"].items():
+        if v["status"] != "OK" or len(v["trend"]) < 2:
+            continue
+        prices = [point["close"] for point in v["trend"]]
+        base = prices[0]
+        pct_series = [(p / base - 1) * 100 for p in prices]
+        series_to_plot[name] = pct_series
+
+    if not series_to_plot:
+        print("[WARN] 추이 차트로 그릴 데이터가 없습니다 (전부 N/A 또는 데이터 부족).")
+        return None
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    for name, pct_series in series_to_plot.items():
+        ax.plot(
+            range(len(pct_series)),
+            pct_series,
+            marker="o",
+            label=DISPLAY_NAMES.get(name, name),
+            linewidth=2,
+        )
+
+    ax.axhline(0, color="black", linewidth=0.8)
+
+    n_points = len(next(iter(series_to_plot.values())))
+    ax.set_xticks(range(n_points))
+    ax.set_xticklabels([f"D-{n_points - 1 - i}" if i < n_points - 1 else "D-0(오늘)" for i in range(n_points)])
+
+    ax.set_ylabel(f"{n_points}일 전 대비 변동률 (%)")
+    ax.set_title(f"반도체 지표 최근 {n_points}일 추이 ({result['as_of']} 기준)")
+    ax.legend(loc="best", fontsize=9, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(TREND_CHART_PATH, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return TREND_CHART_PATH
+
+
 def send_telegram_photo(token, chat_id, photo_path, caption=None):
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
     with open(photo_path, "rb") as f:
@@ -198,11 +249,22 @@ def main():
     print("=====================")
 
     send_telegram_message(token, chat_id, message)
+    time.sleep(1)  # 텔레그램 표시 순서 보장을 위해 메시지 간 약간의 지연
 
     # 차트는 보조 자료 — 텍스트 메시지 발송 후 이어서 전송
+    # 1) 오늘 하루 변동률(%) 막대그래프  2) 최근 N일 추이 라인 차트
     chart_path = build_chart(result)
     if chart_path:
         send_telegram_photo(token, chat_id, chart_path)
+        time.sleep(1)
+    else:
+        print("[WARN] 막대그래프(build_chart)가 생성되지 않아 전송을 건너뜁니다.")
+
+    trend_chart_path = build_trend_chart(result)
+    if trend_chart_path:
+        send_telegram_photo(token, chat_id, trend_chart_path)
+    else:
+        print("[WARN] 추이 차트(build_trend_chart)가 생성되지 않아 전송을 건너뜁니다.")
 
     # 발송 성공 후 history 갱신 (워크플로우에서 이어서 git commit/push)
     update_history(result)
