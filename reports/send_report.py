@@ -26,7 +26,7 @@ import requests
 _COLLECTOR_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "collectors",
-    "260624_collect_overnight.py",
+    "collect_overnight.py",
 )
 _spec = importlib.util.spec_from_file_location("overnight_collector", _COLLECTOR_PATH)
 _collector = importlib.util.module_from_spec(_spec)
