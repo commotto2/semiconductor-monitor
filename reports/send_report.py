@@ -110,6 +110,11 @@ def build_chart(result):
         print("[WARN] 차트로 그릴 데이터가 없습니다 (전부 N/A).")
         return None
 
+    # barh는 기본적으로 첫 항목을 맨 아래에 그리므로,
+    # 텍스트 메시지와 동일한 순서(SOX가 맨 위)로 보이게 순서를 뒤집는다.
+    labels = labels[::-1]
+    changes = changes[::-1]
+
     colors = ["#d62728" if c < 0 else "#2ca02c" for c in changes]
 
     fig, ax = plt.subplots(figsize=(8, 5))
