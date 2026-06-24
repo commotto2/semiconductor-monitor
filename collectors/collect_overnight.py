@@ -52,21 +52,36 @@ KST = timezone(timedelta(hours=9))
 # market-monitor collect_*.py 와 동일한 패턴의 헬퍼
 # ----------------------------------------------------------------------------
 
-def _get_close(ticker, period="1mo"):
+def _get_close(ticker, period="1mo", timeout=20):
     """
     yfinance에서 단일 티커의 종가(Close)를 Series로 안전하게 받아오는 헬퍼.
 
     최신 yfinance 버전에서는 단일 티커를 요청해도 data['Close']가
     DataFrame으로 반환되는 경우가 있어 .squeeze()로 Series 변환이 필요하다.
     (market-monitor 프로젝트의 동일 헬퍼와 같은 로직 — 새 지표 추가 시 반드시 사용할 것)
+
+    timeout: yfinance 호출이 응답 없이 무한 대기하는 것을 막기 위한 명시적 타임아웃(초).
+             GitHub Actions에서 네트워크 응답이 느릴 때 워크플로우 전체가
+             멈춰있는 현상이 있어 추가함 (yf.download 자체에는 기본 타임아웃이 없음).
     """
-    data = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-    if data.empty:
+    print(f"[INFO] {ticker} 데이터 요청 중... (period={period}, timeout={timeout}s)")
+    try:
+        data = yf.download(ticker, period=period, progress=False, auto_adjust=True, timeout=timeout)
+    except Exception as e:
+        print(f"[ERROR] {ticker} yfinance 호출 실패: {e}")
         return pd.Series(dtype=float)
+
+    if data.empty:
+        print(f"[WARN] {ticker} 응답이 비어있음 (data.empty=True)")
+        return pd.Series(dtype=float)
+
     close = data["Close"]
     if isinstance(close, pd.DataFrame):
         close = close.squeeze()
-    return close.dropna()
+
+    result = close.dropna()
+    print(f"[INFO] {ticker} 수신 완료: {len(result)}개 데이터포인트")
+    return result
 
 
 def collect_overnight_signals():
