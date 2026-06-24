@@ -1,7 +1,7 @@
 """
 반도체 오버나잇 리포트 - 텔레그램 메시지 포맷 및 발송
 
-collectors/260624_collect_overnight.py 의 collect_overnight_signals() 결과를
+collectors/collect_overnight.py 의 collect_overnight_signals() 결과를
 받아 텔레그램 메시지로 포맷하고 발송한다.
 
 포맷 원칙:
@@ -14,26 +14,19 @@ collectors/260624_collect_overnight.py 의 collect_overnight_signals() 결과를
 (SOX -> MU -> NVDA -> AMD -> SOXX -> SMH).
 """
 
-import importlib.util
 import os
 import sys
 
 import requests
 
-# collectors/260624_collect_overnight.py 를 직접 로드한다.
-# 파일명이 숫자로 시작해 `import 260624_collect_overnight` 문법 자체가 불가능하므로
-# importlib.util.spec_from_file_location으로 경로 기반 로드를 사용한다.
-_COLLECTOR_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "collectors",
-    "collect_overnight.py",
+# collectors/collect_overnight.py 의 함수를 가져온다.
+# (파일명이 숫자로 시작하지 않으므로 일반 import 문으로 충분하다)
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "collectors"),
 )
-_spec = importlib.util.spec_from_file_location("overnight_collector", _COLLECTOR_PATH)
-_collector = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_collector)
 
-collect_overnight_signals = _collector.collect_overnight_signals
-update_history = _collector.update_history
+from collect_overnight import collect_overnight_signals, update_history
 
 ALERT_THRESHOLD_PCT = 3.0  # 변동폭 |3%| 이상이면 [주의] 표시
 
