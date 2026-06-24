@@ -32,13 +32,13 @@ jobs:
         run: pip install yfinance pandas requests
 
       - name: Run overnight signal collector
-        run: python collectors/260624_collect_overnight.py
+        run: python collectors/collect_overnight.py
 
       - name: Send Telegram report
         env:
           TELEGRAM_TOKEN_SEMI: ${{ secrets.TELEGRAM_TOKEN_SEMI }}
           TELEGRAM_CHAT_SEMI: ${{ secrets.TELEGRAM_CHAT_SEMI }}
-        run: python reports/260624_send_report.py
+        run: python reports/send_report.py
 
       # data/overnight_history.json 변경분을 repo에 커밋
       # (market-monitor의 credit_history.json 누적 저장과 동일한 패턴)
