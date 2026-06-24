@@ -1,54 +1,267 @@
-name: Semiconductor Overnight Report
+"""
+반도체 오버나잇 리포트 - 텔레그램 메시지 포맷 및 발송
 
-# 목표: 한국시간(KST) 아침 05:35 발송
-#   - GitHub Actions cron은 ±30분~2시간 지연이 발생할 수 있어 정확한 시각은 보장되지 않음
-#     (vix-monitor 실측 사례: 목표 KST 08:30 대비 실제 도착 7~8시대로 변동)
-#
-# 발송 요일: 월/화/수/목/금/토 (일요일만 제외)
-#   - 화~금: 평일 오버나잇 (전일 미국 장 마감 -> 당일 한국 개장 전)
-#   - 토요일: 금요일 미국 장 마감분 반영, 월요일 개장 전 정보를 미리 전달
-#   - 일요일: 생략 (미국 시장 휴장, 신규 데이터 없음)
-#   - 월요일: 일요일 밤(=미국 휴장) 기준이라 금요일 마감과 동일한 값이 다시 잡힐 수 있으나
-#             "월요일 개장 직전 마지막 정보"라는 목적상 의도적으로 포함 (중복 무방)
+collectors/collect_overnight.py 의 collect_overnight_signals() 결과를
+받아 텔레그램 메시지로 포맷하고 발송한다.
 
-on:
-  schedule:
-    - cron: '35 20 * * 1,2,3,4,5,6'  # UTC 20:35 = KST 05:35 (목표)
-  workflow_dispatch:  # 수동 실행 버튼
+포맷 원칙:
+  - 이모지 없이 텍스트로만 (+1.23% / -2.45% 형태)
+  - 변동폭 |3%| 이상이면 "[주의]" 라벨만 덧붙임 (market_monitor_context.md 의
+    "정상/경고/위험 기준값" 사상과 동일하되, 여기서는 단일 고정 임계값만 사용)
+  - 해석/분석 문장은 넣지 않음 — 숫자와 추이만 전달 (해석은 사용자가 직접)
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+지표 표시 순서는 TICKERS 딕셔너리 순서를 그대로 따른다
+(SOX -> MU -> NVDA -> AMD -> SOXX -> SMH).
+"""
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+import os
+import sys
 
-      - name: Install dependencies
-        run: pip install yfinance pandas requests matplotlib koreanize-matplotlib
+import matplotlib
+matplotlib.use("Agg")  # GitHub Actions 등 비-GUI 환경에서 렌더링 (market-monitor weekly_report.py와 동일한 처리)
+import matplotlib.pyplot as plt
+import koreanize_matplotlib  # noqa: F401  (import만으로 한글 폰트 적용됨, market-monitor와 동일 패턴)
+import requests
 
-      - name: Run overnight signal collector
-        run: python collectors/collect_overnight.py
+# collectors/collect_overnight.py 의 함수를 가져온다.
+# (파일명이 숫자로 시작하지 않으므로 일반 import 문으로 충분하다)
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "collectors"),
+)
 
-      - name: Send Telegram report
-        env:
-          TELEGRAM_TOKEN_SEMI: ${{ secrets.TELEGRAM_TOKEN_SEMI }}
-          TELEGRAM_CHAT_SEMI: ${{ secrets.TELEGRAM_CHAT_SEMI }}
-        run: python reports/send_report.py
+from collect_overnight import collect_overnight_signals, update_history
 
-      # data/overnight_history.json 변경분을 repo에 커밋
-      # (market-monitor의 credit_history.json 누적 저장과 동일한 패턴)
-      - name: Commit overnight history
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/overnight_history.json
-          git diff --staged --quiet || git commit -m "Update overnight_history.json [skip ci]"
-          git push
-        # 주의(HANDOVER.md 7번 항목과 동일한 함정):
-        # Settings -> Actions -> General -> Workflow permissions 에서
-        # "Read and write permissions" 설정이 안 되어 있으면 이 push가 조용히 실패함.
-        # 다만 push 실패가 리포트 발송 자체를 막지는 않음 (이전 스텝에서 이미 발송 완료).
+# 정식 명칭 매핑: "정식명칭(약어)" 형태로 표기하기 위함
+# (NVDA=엔비디아, AMD=AMD 는 회사명 자체가 일반적으로 통용되어 별도 매핑 불필요)
+DISPLAY_NAMES = {
+    "SOX": "필라델피아(SOX)",
+    "MU": "마이크론(MU)",
+    "NVDA": "엔비디아(NVDA)",
+    "AMD": "AMD",
+    "SOXX": "ETF-아이셰어즈(SOXX)",
+    "SMH": "ETF-반에크(SMH)",
+}
+
+ALERT_THRESHOLD_PCT = 3.0  # 변동폭 |3%| 이상이면 [주의] 표시
+
+TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+def format_message(result):
+    """
+    collect_overnight_signals() 결과를 텔레그램 메시지 텍스트로 변환한다.
+    """
+    lines = []
+    lines.append(f"[반도체 오버나잇 시그널] {result['as_of']} 기준")
+    lines.append(f"(수집: {result['collected_at_kst']} KST)")
+    lines.append("")
+
+    for name, v in result["signals"].items():
+        display_name = DISPLAY_NAMES.get(name, name)
+
+        if v["status"] != "OK":
+            lines.append(f"{display_name}: N/A ({v['status']})")
+            continue
+
+        change = v["change_pct"]
+        sign = "+" if change >= 0 else ""
+        line = f"{display_name}: {v['close']}  ({sign}{change}%)"
+
+        if abs(change) >= ALERT_THRESHOLD_PCT:
+            line += "  [주의]"
+
+        lines.append(line)
+
+    lines.append("")
+    lines.append(f"(주의 기준: 전일 대비 변동폭 |{ALERT_THRESHOLD_PCT}%| 이상)")
+
+    return "\n".join(lines)
+
+
+CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight_chart.png")
+TREND_CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight_trend_chart.png")
+
+
+def build_chart(result):
+    """
+    6개 지표의 전일 대비 변동률(%)을 세로 막대그래프(column chart)로 그려 PNG로 저장한다.
+
+    절대가(SOX ~13000대, MU ~1000대, NVDA ~200대 등)는 단위가 서로 달라
+    한 화면에 같이 그리면 스케일이 깨지므로, 변동률(%) 기준으로 통일해서 그린다.
+
+    Returns:
+        차트를 그릴 수 있었으면 CHART_PATH, 그릴 데이터가 전혀 없으면 None
+    """
+    labels = []
+    changes = []
+
+    for name, v in result["signals"].items():
+        if v["status"] != "OK":
+            continue
+        labels.append(DISPLAY_NAMES.get(name, name))
+        changes.append(v["change_pct"])
+
+    if not changes:
+        print("[WARN] 차트로 그릴 데이터가 없습니다 (전부 N/A).")
+        return None
+
+    colors = ["#d62728" if c < 0 else "#2ca02c" for c in changes]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    bars = ax.bar(labels, changes, color=colors)
+
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+    ax.axhline(-ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+
+    ax.set_ylabel("전일 대비 변동률 (%)")
+    ax.set_title(f"반도체 오버나잇 시그널 ({result['as_of']} 기준)")
+
+    # 라벨이 길어 가로로 다 안 들어가므로 30도 회전
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+    # 막대 끝에 값 라벨 표시 (0 기준선과 막대 끝 사이, 막대 안쪽)
+    for bar, change in zip(bars, changes):
+        sign = "+" if change >= 0 else ""
+        if change >= 0:
+            y_pos = max(bar.get_height() - 0.5, 0.2)
+            va = "top"
+        else:
+            y_pos = min(bar.get_height() + 0.5, -0.2)
+            va = "bottom"
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            y_pos,
+            f"{sign}{change}%",
+            ha="center",
+            va=va,
+            fontsize=9,
+            color="white",
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    plt.savefig(CHART_PATH, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return CHART_PATH
+
+
+def build_trend_chart(result):
+    """
+    6개 지표의 최근 N일(TREND_DAYS) 추이를 라인 차트로 그려 PNG로 저장한다.
+
+    절대가 단위가 서로 달라(SOX ~13000대, MU ~1000대 등) 그대로 그리면
+    스케일이 안 맞으므로, 각 지표를 추이 구간 첫날 기준 변동률(%)로 정규화해서
+    같은 축에 겹쳐 그린다 (0%에서 모두 출발).
+
+    Returns:
+        차트를 그릴 수 있었으면 TREND_CHART_PATH, 그릴 데이터가 전혀 없으면 None
+    """
+    series_to_plot = {}
+
+    for name, v in result["signals"].items():
+        if v["status"] != "OK" or len(v["trend"]) < 2:
+            continue
+        prices = [point["close"] for point in v["trend"]]
+        base = prices[0]
+        pct_series = [(p / base - 1) * 100 for p in prices]
+        series_to_plot[name] = pct_series
+
+    if not series_to_plot:
+        print("[WARN] 추이 차트로 그릴 데이터가 없습니다 (전부 N/A 또는 데이터 부족).")
+        return None
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    for name, pct_series in series_to_plot.items():
+        ax.plot(
+            range(len(pct_series)),
+            pct_series,
+            marker="o",
+            label=DISPLAY_NAMES.get(name, name),
+            linewidth=2,
+        )
+
+    ax.axhline(0, color="black", linewidth=0.8)
+
+    n_points = len(next(iter(series_to_plot.values())))
+    ax.set_xticks(range(n_points))
+    ax.set_xticklabels([f"D-{n_points - 1 - i}" if i < n_points - 1 else "D-0(오늘)" for i in range(n_points)])
+
+    ax.set_ylabel(f"{n_points}일 전 대비 변동률 (%)")
+    ax.set_title(f"반도체 지표 최근 {n_points}일 추이 ({result['as_of']} 기준)")
+    ax.legend(loc="best", fontsize=9, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(TREND_CHART_PATH, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return TREND_CHART_PATH
+
+
+def send_telegram_photo(token, chat_id, photo_path, caption=None):
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
+    with open(photo_path, "rb") as f:
+        files = {"photo": f}
+        payload = {"chat_id": chat_id}
+        if caption:
+            payload["caption"] = caption
+        resp = requests.post(url, data=payload, files=files, timeout=30)
+
+    if resp.status_code != 200:
+        print(f"[ERROR] 텔레그램 차트 발송 실패: {resp.status_code} {resp.text}")
+        resp.raise_for_status()
+
+    print("[INFO] 텔레그램 차트 발송 완료")
+    return resp.json()
+
+
+def send_telegram_message(token, chat_id, text):
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    resp = requests.post(url, data=payload, timeout=15)
+
+    if resp.status_code != 200:
+        print(f"[ERROR] 텔레그램 발송 실패: {resp.status_code} {resp.text}")
+        resp.raise_for_status()
+
+    print("[INFO] 텔레그램 발송 완료")
+    return resp.json()
+
+
+def main():
+    token = os.environ.get("TELEGRAM_TOKEN_SEMI")
+    chat_id = os.environ.get("TELEGRAM_CHAT_SEMI")
+
+    if not token or not chat_id:
+        print("[ERROR] TELEGRAM_TOKEN_SEMI 또는 TELEGRAM_CHAT_SEMI 환경변수가 없습니다.")
+        sys.exit(1)
+
+    result = collect_overnight_signals()
+    message = format_message(result)
+
+    print("=== 발송할 메시지 ===")
+    print(message)
+    print("=====================")
+
+    send_telegram_message(token, chat_id, message)
+
+    # 차트는 보조 자료 — 텍스트 메시지 발송 후 이어서 전송
+    # 1) 오늘 하루 변동률(%) 막대그래프  2) 최근 N일 추이 라인 차트
+    chart_path = build_chart(result)
+    if chart_path:
+        send_telegram_photo(token, chat_id, chart_path)
+
+    trend_chart_path = build_trend_chart(result)
+    if trend_chart_path:
+        send_telegram_photo(token, chat_id, trend_chart_path)
+
+    # 발송 성공 후 history 갱신 (워크플로우에서 이어서 git commit/push)
+    update_history(result)
+
+
+if __name__ == "__main__":
+    main()
