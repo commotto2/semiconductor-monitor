@@ -35,12 +35,12 @@ from collect_overnight import collect_overnight_signals, update_history
 # 정식 명칭 매핑: "정식명칭(약어)" 형태로 표기하기 위함
 # (NVDA=엔비디아, AMD=AMD 는 회사명 자체가 일반적으로 통용되어 별도 매핑 불필요)
 DISPLAY_NAMES = {
-    "SOX": "필라델피아 반도체 지수(SOX)",
+    "SOX": "필라델피아(SOX)",
     "MU": "마이크론(MU)",
     "NVDA": "엔비디아(NVDA)",
     "AMD": "AMD",
-    "SOXX": "반도체 ETF-아이셰어즈(SOXX)",
-    "SMH": "반도체 ETF-반에크(SMH)",
+    "SOXX": "ETF-아이셰어즈(SOXX)",
+    "SMH": "ETF-반에크(SMH)",
 }
 
 ALERT_THRESHOLD_PCT = 3.0  # 변동폭 |3%| 이상이면 [주의] 표시
@@ -89,7 +89,7 @@ CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight
 
 def build_chart(result):
     """
-    6개 지표의 전일 대비 변동률(%)을 막대그래프로 그려 PNG로 저장한다.
+    6개 지표의 전일 대비 변동률(%)을 세로 막대그래프(column chart)로 그려 PNG로 저장한다.
 
     절대가(SOX ~13000대, MU ~1000대, NVDA ~200대 등)는 단위가 서로 달라
     한 화면에 같이 그리면 스케일이 깨지므로, 변동률(%) 기준으로 통일해서 그린다.
@@ -110,40 +110,36 @@ def build_chart(result):
         print("[WARN] 차트로 그릴 데이터가 없습니다 (전부 N/A).")
         return None
 
-    # barh는 기본적으로 첫 항목을 맨 아래에 그리므로,
-    # 텍스트 메시지와 동일한 순서(SOX가 맨 위)로 보이게 순서를 뒤집는다.
-    labels = labels[::-1]
-    changes = changes[::-1]
-
     colors = ["#d62728" if c < 0 else "#2ca02c" for c in changes]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.barh(labels, changes, color=colors)
+    fig, ax = plt.subplots(figsize=(9, 6))
+    bars = ax.bar(labels, changes, color=colors)
 
-    ax.axvline(0, color="black", linewidth=0.8)
-    ax.axvline(ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
-    ax.axvline(-ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+    ax.axhline(-ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
 
-    ax.set_xlabel("전일 대비 변동률 (%)")
+    ax.set_ylabel("전일 대비 변동률 (%)")
     ax.set_title(f"반도체 오버나잇 시그널 ({result['as_of']} 기준)")
 
-    # 막대 끝에 값 라벨 표시
-    # 막대 끝(가장 먼 쪽)에 라벨을 두면 막대가 길 때 y축 라벨과 겹치므로,
-    # 항상 0 기준선과 막대 사이 안쪽 공간에 라벨을 놓는다.
+    # 라벨이 길어 가로로 다 안 들어가므로 30도 회전
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+    # 막대 끝에 값 라벨 표시 (0 기준선과 막대 끝 사이, 막대 안쪽)
     for bar, change in zip(bars, changes):
         sign = "+" if change >= 0 else ""
         if change >= 0:
-            x_pos = max(bar.get_width() - 0.3, 0.1)
-            ha = "right"
+            y_pos = max(bar.get_height() - 0.5, 0.2)
+            va = "top"
         else:
-            x_pos = min(bar.get_width() + 0.3, -0.1)
-            ha = "left"
+            y_pos = min(bar.get_height() + 0.5, -0.2)
+            va = "bottom"
         ax.text(
-            x_pos,
-            bar.get_y() + bar.get_height() / 2,
+            bar.get_x() + bar.get_width() / 2,
+            y_pos,
             f"{sign}{change}%",
-            va="center",
-            ha=ha,
+            ha="center",
+            va=va,
             fontsize=9,
             color="white",
             fontweight="bold",
