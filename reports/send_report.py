@@ -17,6 +17,10 @@ collectors/collect_overnight.py 의 collect_overnight_signals() 결과를
 import os
 import sys
 
+import matplotlib
+matplotlib.use("Agg")  # GitHub Actions 등 비-GUI 환경에서 렌더링 (market-monitor weekly_report.py와 동일한 처리)
+import matplotlib.pyplot as plt
+import koreanize_matplotlib  # noqa: F401  (import만으로 한글 폰트 적용됨, market-monitor와 동일 패턴)
 import requests
 
 # collectors/collect_overnight.py 의 함수를 가져온다.
@@ -27,6 +31,17 @@ sys.path.insert(
 )
 
 from collect_overnight import collect_overnight_signals, update_history
+
+# 정식 명칭 매핑: "정식명칭(약어)" 형태로 표기하기 위함
+# (NVDA=엔비디아, AMD=AMD 는 회사명 자체가 일반적으로 통용되어 별도 매핑 불필요)
+DISPLAY_NAMES = {
+    "SOX": "필라델피아 반도체 지수(SOX)",
+    "MU": "마이크론(MU)",
+    "NVDA": "엔비디아(NVDA)",
+    "AMD": "AMD",
+    "SOXX": "반도체 ETF-아이셰어즈(SOXX)",
+    "SMH": "반도체 ETF-반에크(SMH)",
+}
 
 ALERT_THRESHOLD_PCT = 3.0  # 변동폭 |3%| 이상이면 [주의] 표시
 
@@ -43,13 +58,15 @@ def format_message(result):
     lines.append("")
 
     for name, v in result["signals"].items():
+        display_name = DISPLAY_NAMES.get(name, name)
+
         if v["status"] != "OK":
-            lines.append(f"{name}: N/A ({v['status']})")
+            lines.append(f"{display_name}: N/A ({v['status']})")
             continue
 
         change = v["change_pct"]
         sign = "+" if change >= 0 else ""
-        line = f"{name}: {v['close']}  ({sign}{change}%)"
+        line = f"{display_name}: {v['close']}  ({sign}{change}%)"
 
         if abs(change) >= ALERT_THRESHOLD_PCT:
             line += "  [주의]"
@@ -65,6 +82,90 @@ def format_message(result):
     lines.append(f"(주의 기준: 전일 대비 변동폭 |{ALERT_THRESHOLD_PCT}%| 이상)")
 
     return "\n".join(lines)
+
+
+CHART_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overnight_chart.png")
+
+
+def build_chart(result):
+    """
+    6개 지표의 전일 대비 변동률(%)을 막대그래프로 그려 PNG로 저장한다.
+
+    절대가(SOX ~13000대, MU ~1000대, NVDA ~200대 등)는 단위가 서로 달라
+    한 화면에 같이 그리면 스케일이 깨지므로, 변동률(%) 기준으로 통일해서 그린다.
+
+    Returns:
+        차트를 그릴 수 있었으면 CHART_PATH, 그릴 데이터가 전혀 없으면 None
+    """
+    labels = []
+    changes = []
+
+    for name, v in result["signals"].items():
+        if v["status"] != "OK":
+            continue
+        labels.append(DISPLAY_NAMES.get(name, name))
+        changes.append(v["change_pct"])
+
+    if not changes:
+        print("[WARN] 차트로 그릴 데이터가 없습니다 (전부 N/A).")
+        return None
+
+    colors = ["#d62728" if c < 0 else "#2ca02c" for c in changes]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.barh(labels, changes, color=colors)
+
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.axvline(ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+    ax.axvline(-ALERT_THRESHOLD_PCT, color="gray", linewidth=0.8, linestyle="--")
+
+    ax.set_xlabel("전일 대비 변동률 (%)")
+    ax.set_title(f"반도체 오버나잇 시그널 ({result['as_of']} 기준)")
+
+    # 막대 끝에 값 라벨 표시
+    # 막대 끝(가장 먼 쪽)에 라벨을 두면 막대가 길 때 y축 라벨과 겹치므로,
+    # 항상 0 기준선과 막대 사이 안쪽 공간에 라벨을 놓는다.
+    for bar, change in zip(bars, changes):
+        sign = "+" if change >= 0 else ""
+        if change >= 0:
+            x_pos = max(bar.get_width() - 0.3, 0.1)
+            ha = "right"
+        else:
+            x_pos = min(bar.get_width() + 0.3, -0.1)
+            ha = "left"
+        ax.text(
+            x_pos,
+            bar.get_y() + bar.get_height() / 2,
+            f"{sign}{change}%",
+            va="center",
+            ha=ha,
+            fontsize=9,
+            color="white",
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    plt.savefig(CHART_PATH, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return CHART_PATH
+
+
+def send_telegram_photo(token, chat_id, photo_path, caption=None):
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
+    with open(photo_path, "rb") as f:
+        files = {"photo": f}
+        payload = {"chat_id": chat_id}
+        if caption:
+            payload["caption"] = caption
+        resp = requests.post(url, data=payload, files=files, timeout=30)
+
+    if resp.status_code != 200:
+        print(f"[ERROR] 텔레그램 차트 발송 실패: {resp.status_code} {resp.text}")
+        resp.raise_for_status()
+
+    print("[INFO] 텔레그램 차트 발송 완료")
+    return resp.json()
 
 
 def send_telegram_message(token, chat_id, text):
@@ -96,6 +197,11 @@ def main():
     print("=====================")
 
     send_telegram_message(token, chat_id, message)
+
+    # 차트는 보조 자료 — 텍스트 메시지 발송 후 이어서 전송
+    chart_path = build_chart(result)
+    if chart_path:
+        send_telegram_photo(token, chat_id, chart_path)
 
     # 발송 성공 후 history 갱신 (워크플로우에서 이어서 git commit/push)
     update_history(result)
