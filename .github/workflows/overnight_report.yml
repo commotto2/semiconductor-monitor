@@ -1,0 +1,55 @@
+name: Semiconductor Overnight Report
+
+# 목표: 한국시간(KST) 아침 06:40~07:20 사이 발송
+#   - vix-monitor 의 cron('30 21 * * *', UTC 21:30)보다 5분 늦게 설정 (UTC 21:35)
+#   - GitHub Actions cron은 ±30분~2시간 지연이 발생할 수 있어 정확한 시각은 보장되지 않음
+#     (vix-monitor 실측 사례: 목표 KST 08:30 대비 실제 도착 7~8시대로 변동)
+#
+# 발송 요일: 월/화/수/목/금/토 (일요일만 제외)
+#   - 화~금: 평일 오버나잇 (전일 미국 장 마감 -> 당일 한국 개장 전)
+#   - 토요일: 금요일 미국 장 마감분 반영, 월요일 개장 전 정보를 미리 전달
+#   - 일요일: 생략 (미국 시장 휴장, 신규 데이터 없음)
+#   - 월요일: 일요일 밤(=미국 휴장) 기준이라 금요일 마감과 동일한 값이 다시 잡힐 수 있으나
+#             "월요일 개장 직전 마지막 정보"라는 목적상 의도적으로 포함 (중복 무방)
+
+on:
+  schedule:
+    - cron: '35 21 * * 1,2,3,4,5,6'  # UTC 21:35 = KST 06:35 (목표)
+  workflow_dispatch:  # 수동 실행 버튼
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas requests
+
+      - name: Run overnight signal collector
+        run: python collectors/260624_collect_overnight.py
+
+      - name: Send Telegram report
+        env:
+          TELEGRAM_TOKEN_SEMI: ${{ secrets.TELEGRAM_TOKEN_SEMI }}
+          TELEGRAM_CHAT_SEMI: ${{ secrets.TELEGRAM_CHAT_SEMI }}
+        run: python reports/260624_send_report.py
+
+      # data/overnight_history.json 변경분을 repo에 커밋
+      # (market-monitor의 credit_history.json 누적 저장과 동일한 패턴)
+      - name: Commit overnight history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/overnight_history.json
+          git diff --staged --quiet || git commit -m "Update overnight_history.json [skip ci]"
+          git push
+        # 주의(HANDOVER.md 7번 항목과 동일한 함정):
+        # Settings -> Actions -> General -> Workflow permissions 에서
+        # "Read and write permissions" 설정이 안 되어 있으면 이 push가 조용히 실패함.
+        # 다만 push 실패가 리포트 발송 자체를 막지는 않음 (이전 스텝에서 이미 발송 완료).
