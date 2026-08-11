@@ -698,5 +698,40 @@
         "status": "OK"
       }
     }
+  },
+  "2026-08-11": {
+    "collected_at_kst": "2026-08-12 06:26:24",
+    "signals": {
+      "SOX": {
+        "close": 12098.47,
+        "change_pct": 0.87,
+        "status": "OK"
+      },
+      "MU": {
+        "close": 868.52,
+        "change_pct": 0.87,
+        "status": "OK"
+      },
+      "NVDA": {
+        "close": 217.5,
+        "change_pct": -0.02,
+        "status": "OK"
+      },
+      "AMD": {
+        "close": 474.32,
+        "change_pct": 1.01,
+        "status": "OK"
+      },
+      "SOXX": {
+        "close": 534.2,
+        "change_pct": 0.91,
+        "status": "OK"
+      },
+      "SMH": {
+        "close": 572.93,
+        "change_pct": 0.62,
+        "status": "OK"
+      }
+    }
   }
 }
