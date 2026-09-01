@@ -1,39 +1,4 @@
 {
-  "2026-07-31": {
-    "collected_at_kst": "2026-08-02 06:30:03",
-    "signals": {
-      "SOX": {
-        "close": 11311.08,
-        "change_pct": 0.07,
-        "status": "OK"
-      },
-      "MU": {
-        "close": 823.03,
-        "change_pct": -5.9,
-        "status": "OK"
-      },
-      "NVDA": {
-        "close": 200.75,
-        "change_pct": 2.93,
-        "status": "OK"
-      },
-      "AMD": {
-        "close": 476.15,
-        "change_pct": -1.9,
-        "status": "OK"
-      },
-      "SOXX": {
-        "close": 504.89,
-        "change_pct": 0.07,
-        "status": "OK"
-      },
-      "SMH": {
-        "close": 540.53,
-        "change_pct": 0.3,
-        "status": "OK"
-      }
-    }
-  },
   "2026-08-03": {
     "collected_at_kst": "2026-08-04 06:44:59",
     "signals": {
@@ -730,6 +695,41 @@
       "SMH": {
         "close": 553.11,
         "change_pct": -3.47,
+        "status": "OK"
+      }
+    }
+  },
+  "2026-08-31": {
+    "collected_at_kst": "2026-09-01 09:03:36",
+    "signals": {
+      "SOX": {
+        "close": 11535.05,
+        "change_pct": 0.57,
+        "status": "OK"
+      },
+      "MU": {
+        "close": 958.73,
+        "change_pct": 2.77,
+        "status": "OK"
+      },
+      "NVDA": {
+        "close": 220.78,
+        "change_pct": 1.48,
+        "status": "OK"
+      },
+      "AMD": {
+        "close": 470.72,
+        "change_pct": 1.1,
+        "status": "OK"
+      },
+      "SOXX": {
+        "close": 511.04,
+        "change_pct": 0.48,
+        "status": "OK"
+      },
+      "SMH": {
+        "close": 556.63,
+        "change_pct": 0.64,
         "status": "OK"
       }
     }
